@@ -1,90 +1,121 @@
 import streamlit as st
 import pandas as pd
+import firebase_admin
+from firebase_admin import credentials, firestore
 from datetime import datetime
-from math import radians, cos, sin, sqrt, atan2
 
-# ===============================
-# Page Config
-# ===============================
-st.set_page_config(page_title="Toddle Track Dashboard", layout="wide")
-
-# ===============================
-# Header
-# ===============================
-st.markdown(
-    """
-    <h1 style="text-align:center; color:#2C3E50;">
-        👶 Toddle Track - Parent Dashboard
-    </h1>
-    <p style="text-align:center; color:#7F8C8D;">
-        Real-time child safety monitoring with motion alerts, location tracking & geofencing
-    </p>
-    <hr style="border:1px solid #BDC3C7;">
-    """,
-    unsafe_allow_html=True
+# ------------------- Firebase Setup -------------------
+if not firebase_admin._apps:
+    cred = credentials.Certificate(
+    "C:\\Users\\spand\\OneDrive\\Documents\\toddletrack\\toddletrack\\firebase_config.json"
 )
+    firebase_admin.initialize_app(cred)
 
-# ===============================
-# Guardian Info Section (Sidebar)
-# ===============================
-st.sidebar.header("👨‍👩‍👧 Guardian Info")
+db = firestore.client()
+
+# ------------------- Streamlit Page Config -------------------
+st.set_page_config(page_title="Toddle Track - Parent Dashboard", layout="wide")
+
+# Custom CSS for styling
+st.markdown("""
+    <style>
+        .main {
+            background-color: #0e1117;
+            color: white;
+        }
+        .stTextInput>div>div>input, .stTextArea textarea {
+            background-color: #1a1c23;
+            color: white;
+        }
+        .stButton>button {
+            background-color: #ff4b4b;
+            color: white;
+            border-radius: 8px;
+        }
+        .alert-box {
+            padding: 12px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        .alert-danger {
+            background-color: #ff4b4b;
+            color: white;
+        }
+        .alert-warning {
+            background-color: #f39c12;
+            color: black;
+        }
+        .alert-success {
+            background-color: #2ecc71;
+            color: white;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# ------------------- Guardian Info -------------------
+st.sidebar.title("👨‍👩‍👧 Guardian Info")
+
 guardian_name = st.sidebar.text_input("Guardian Name", "John Doe")
 guardian_phone = st.sidebar.text_input("Phone", "+91-9999999999")
 guardian_email = st.sidebar.text_input("Email", "parent@example.com")
-guardian_address = st.sidebar.text_area("Address", "123, MG Road, Bangalore")
+guardian_address = st.sidebar.text_area("Address", "Amrita Vishwa Vidyapeetham, Coimbatore")
 
 if st.sidebar.button("Update Info"):
-    st.sidebar.success("✅ Guardian info updated!")
+    st.sidebar.success("Guardian Info Updated ✅")
 
-# ===============================
-# Dummy Child Data (replace with Firebase later)
-# ===============================
-data = pd.DataFrame([
-    {"Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-     "Event": "Freefall detected",
-     "Lat": 10.9032, "Lon": 76.9020},  # Near Amrita CBE
-    {"Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-     "Event": "Normal activity",
-     "Lat": 10.9055, "Lon": 76.8980}   # Another nearby point
-])
+# ------------------- Dashboard Header -------------------
+st.title("👶 Toddle Track - Parent Dashboard")
+st.caption("Real-time child safety monitoring with motion alerts, location tracking & geofencing")
 
-# ===============================
-# Layout with 2 Columns
-# ===============================
-col1, col2 = st.columns([2, 1])
+st.markdown("---")
 
-# ----------- Child Location Map -----------
-with col1:
-    st.markdown("### 📍 Child Location")
-    st.info("Showing latest detected positions of your child on map.")
-    map_data = data.rename(columns={"Lat": "lat", "Lon": "lon"})
-    st.map(map_data[["lat", "lon"]], zoom=15)
-
-# ----------- Alerts (Styled Cards on Right Side) -----------
-with col2:
-    st.markdown("### 🚨 Alerts")
-    for i, row in data.iterrows():
-        if row["Event"] != "Normal activity":
-            # Alert events
-            st.markdown(
-                f"""
-                <div style="padding:15px; margin-bottom:12px; background-color:#FDEDEC; 
-                            border-left: 6px solid #C0392B; border-radius:10px;">
-                    <b style="color:#C0392B; font-size:16px;">⚠️ {row['Event']}</b><br>
-                    <span style="color:#922B21;">🕒 {row['Time']}</span>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+# ------------------- Fetch Child Data -------------------
+def fetch_child_data():
+    try:
+        # Assuming your ESP32 sends data with 'latitude' and 'longitude' fields
+        docs = db.collection("child_data").order_by("Time", direction=firestore.Query.DESCENDING).limit(20).stream()
+        records = []
+        for doc in docs:
+            d = doc.to_dict()
+            records.append(d)
+        if records:
+            df = pd.DataFrame(records)
+            # Rename columns to match st.map requirements
+            df = df.rename(columns={"latitude": "lat", "longitude": "lon"})
+            return df
         else:
-            # Normal activity
-            st.markdown(
-                f"""
-                <div style="padding:15px; margin-bottom:12px; background-color:#E8F8F5; 
-                            border-left: 6px solid #1E8449; border-radius:10px;">
-                    <b style="color:#1E8449; font-size:16px;">✅ {row['Event']}</b><br>
-                    <span style="color:#196F3D;">🕒 {row['Time']}</span>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+            return pd.DataFrame(columns=["lat", "lon", "Event", "Time"])
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return pd.DataFrame(columns=["lat", "lon", "Event", "Time"])
+
+data = fetch_child_data()
+
+# ------------------- Child Location Map -------------------
+st.subheader("📍 Child Location")
+st.info("Showing latest detected positions of your child on map.")
+
+if not data.empty and "lat" in data.columns and "lon" in data.columns:
+    st.map(data[["lat", "lon"]], zoom=15)
+else:
+    st.warning("No location data available yet.")
+
+# ------------------- Alerts Section -------------------
+st.subheader("🚨 Alerts")
+if not data.empty:
+    latest_events = data.head(5)
+    for _, row in latest_events.iterrows():
+        event = row.get("Event", "Unknown")
+        time = row.get("Time", "Unknown")
+        
+        if "freefall" in event.lower() or "jerk" in event.lower() or "dash" in event.lower():
+            st.markdown(f"<div class='alert-box alert-danger'>⚠️ {event} at {time}</div>", unsafe_allow_html=True)
+        elif "geofence" in event.lower():
+            st.markdown(f"<div class='alert-box alert-warning'>📍 {event} at {time}</div>", unsafe_allow_html=True)
+        elif "sos" in event.lower() or "button" in event.lower():
+            st.markdown(f"<div class='alert-box alert-danger'>🚨 SOS Alert: {event} at {time}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='alert-box alert-success'>✅ {event} at {time}</div>", unsafe_allow_html=True)
+else:
+    st.info("No alerts yet. Your child is safe ✅")
