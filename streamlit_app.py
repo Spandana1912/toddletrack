@@ -1,19 +1,24 @@
 import streamlit as st
-import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
 from streamlit_folium import st_folium
 import folium
 from math import radians, sin, cos, sqrt, atan2
+from streamlit_autorefresh import st_autorefresh
+import json
 
 # ------------------- Firebase Setup -------------------
 if not firebase_admin._apps:
-    cred = credentials.Certificate("C:\\Users\\Subhalakshmi B\\firebase_config.json")
+    # Load Firebase credentials from Streamlit secrets
+    firebase_creds_dict = json.loads(st.secrets["FIREBASE_CREDENTIALS"])
+
+    cred = credentials.Certificate(firebase_creds_dict)
+
     firebase_admin.initialize_app(cred, {
         'databaseURL': 'https://toddletrack-fd848-default-rtdb.asia-southeast1.firebasedatabase.app/'
     })
 
-# ------------------- Streamlit Page Config -------------------
+# ------------------- Page Config -------------------
 st.set_page_config(page_title="Toddle Track - Parent Dashboard", layout="wide")
 
 # ------------------- Guardian Info -------------------
@@ -26,10 +31,17 @@ guardian_address = st.sidebar.text_area("Address", "Amrita Vishwa Vidyapeetham, 
 if st.sidebar.button("Update Info"):
     st.sidebar.success("Guardian Info Updated ✅")
 
+# ------------------- Refresh Rate -------------------
+refresh_rate = st.sidebar.slider("Refresh rate (seconds)", 2, 20, 5)
+st_autorefresh(interval=refresh_rate * 1000, key="map_refresh")
+
+# ------------------- Geofence -------------------
+safe_radius = st.sidebar.slider("Geofence radius (meters)", 10, 2000, 100)
+
 # ------------------- Fetch Child Location -------------------
 def fetch_child_location():
     try:
-        ref = db.reference("sensor")
+        ref = db.reference("sensor")  # Node where Arduino sends data
         data = ref.get()
         if data and "latitude" in data and "longitude" in data:
             return float(data["latitude"]), float(data["longitude"])
@@ -40,38 +52,23 @@ def fetch_child_location():
 
 # ------------------- Haversine Formula -------------------
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000  # Earth radius in meters
+    R = 6371000  # meters
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
-    a = sin(dlat/2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2) ** 2
+    a = sin(dlat/2) **2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2) **2
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     return R * c
-
-# ------------------- Refresh Rate -------------------
-refresh_rate = st.sidebar.slider("Refresh rate (seconds)", 2, 20, 5)
-
-# ------------------- Geofence Radius -------------------
-safe_radius = st.sidebar.slider("Geofence radius (meters)", 10, 2000, 100)
-
-# ------------------- Auto Refresh -------------------
-st_autorefresh = st.experimental_memo.clear  # 👈 Hacky placeholder for clarity
-count = st.experimental_rerun  # (Will explain below)
-
-st_autorefresh = st.sidebar.empty()
-st_autorefresh = st.experimental_rerun
-
-# Or the recommended way:
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=refresh_rate * 1000, key="map_refresh")
 
 # ------------------- Main Dashboard -------------------
 lat, lon = fetch_child_location()
 st.subheader("📍 Child Location")
 
 if lat is not None and lon is not None:
+    # Initialize safe zone if not already
     if "safe_lat" not in st.session_state:
         st.session_state.safe_lat, st.session_state.safe_lon = lat, lon
 
+    # Map setup
     m = folium.Map(location=[lat, lon], zoom_start=17)
 
     # Child marker
@@ -83,7 +80,7 @@ if lat is not None and lon is not None:
         fill_color="red",
     ).add_to(m)
 
-    # Safe zone
+    # Safe zone circle
     folium.Circle(
         location=[st.session_state.safe_lat, st.session_state.safe_lon],
         radius=safe_radius,
@@ -98,14 +95,15 @@ if lat is not None and lon is not None:
         st.session_state.safe_lat = map_click["last_clicked"]["lat"]
         st.session_state.safe_lon = map_click["last_clicked"]["lng"]
 
-    # Show child location
+    # Display current location
     st.success(f"Child’s Current Location: 📍 ({lat}, {lon})")
 
-    # Check safe zone
+    # Geofence check
     distance = haversine(lat, lon, st.session_state.safe_lat, st.session_state.safe_lon)
     if distance > safe_radius:
-        st.error(f"⚠ ALERT: Child is outside the safe zone! (Distance: {int(distance)}m)")
+        st.error(f"⚠ ALERT: Child is outside the safe zone! (Distance: {int(distance)} m)")
     else:
-        st.info(f"✅ Child is inside the safe zone (Distance: {int(distance)}m)")
+        st.info(f"✅ Child is inside the safe zone (Distance: {int(distance)} m)")
+
 else:
     st.warning("No location data available yet.")
