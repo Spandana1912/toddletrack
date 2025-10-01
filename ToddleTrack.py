@@ -1,61 +1,23 @@
 import streamlit as st
 import pandas as pd
 import firebase_admin
-from firebase_admin import credentials, firestore
-from datetime import datetime
+from firebase_admin import credentials, db
+from streamlit_folium import st_folium
+import folium
+from math import radians, sin, cos, sqrt, atan2
 
 # ------------------- Firebase Setup -------------------
 if not firebase_admin._apps:
-    cred = credentials.Certificate(
-    "C:\\Users\\spand\\OneDrive\\Documents\\toddletrack\\toddletrack\\firebase_config.json"
-)
-    firebase_admin.initialize_app(cred)
-
-db = firestore.client()
+    cred = credentials.Certificate("C:\\Users\\Subhalakshmi B\\firebase_config.json")
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': 'https://toddletrack-fd848-default-rtdb.asia-southeast1.firebasedatabase.app/'
+    })
 
 # ------------------- Streamlit Page Config -------------------
 st.set_page_config(page_title="Toddle Track - Parent Dashboard", layout="wide")
 
-# Custom CSS for styling
-st.markdown("""
-    <style>
-        .main {
-            background-color: #0e1117;
-            color: white;
-        }
-        .stTextInput>div>div>input, .stTextArea textarea {
-            background-color: #1a1c23;
-            color: white;
-        }
-        .stButton>button {
-            background-color: #ff4b4b;
-            color: white;
-            border-radius: 8px;
-        }
-        .alert-box {
-            padding: 12px;
-            border-radius: 10px;
-            margin-bottom: 10px;
-            font-weight: bold;
-        }
-        .alert-danger {
-            background-color: #ff4b4b;
-            color: white;
-        }
-        .alert-warning {
-            background-color: #f39c12;
-            color: black;
-        }
-        .alert-success {
-            background-color: #2ecc71;
-            color: white;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
 # ------------------- Guardian Info -------------------
 st.sidebar.title("👨‍👩‍👧 Guardian Info")
-
 guardian_name = st.sidebar.text_input("Guardian Name", "John Doe")
 guardian_phone = st.sidebar.text_input("Phone", "+91-9999999999")
 guardian_email = st.sidebar.text_input("Email", "parent@example.com")
@@ -64,58 +26,86 @@ guardian_address = st.sidebar.text_area("Address", "Amrita Vishwa Vidyapeetham, 
 if st.sidebar.button("Update Info"):
     st.sidebar.success("Guardian Info Updated ✅")
 
-# ------------------- Dashboard Header -------------------
-st.title("👶 Toddle Track - Parent Dashboard")
-st.caption("Real-time child safety monitoring with motion alerts, location tracking & geofencing")
-
-st.markdown("---")
-
-# ------------------- Fetch Child Data -------------------
-def fetch_child_data():
+# ------------------- Fetch Child Location -------------------
+def fetch_child_location():
     try:
-        # Assuming your ESP32 sends data with 'latitude' and 'longitude' fields
-        docs = db.collection("child_data").order_by("Time", direction=firestore.Query.DESCENDING).limit(20).stream()
-        records = []
-        for doc in docs:
-            d = doc.to_dict()
-            records.append(d)
-        if records:
-            df = pd.DataFrame(records)
-            # Rename columns to match st.map requirements
-            df = df.rename(columns={"latitude": "lat", "longitude": "lon"})
-            return df
-        else:
-            return pd.DataFrame(columns=["lat", "lon", "Event", "Time"])
+        ref = db.reference("sensor")
+        data = ref.get()
+        if data and "latitude" in data and "longitude" in data:
+            return float(data["latitude"]), float(data["longitude"])
+        return None, None
     except Exception as e:
         st.error(f"Error fetching data: {e}")
-        return pd.DataFrame(columns=["lat", "lon", "Event", "Time"])
+        return None, None
 
-data = fetch_child_data()
+# ------------------- Haversine Formula -------------------
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000  # Earth radius in meters
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
 
-# ------------------- Child Location Map -------------------
+# ------------------- Refresh Rate -------------------
+refresh_rate = st.sidebar.slider("Refresh rate (seconds)", 2, 20, 5)
+
+# ------------------- Geofence Radius -------------------
+safe_radius = st.sidebar.slider("Geofence radius (meters)", 10, 2000, 100)
+
+# ------------------- Auto Refresh -------------------
+st_autorefresh = st.experimental_memo.clear  # 👈 Hacky placeholder for clarity
+count = st.experimental_rerun  # (Will explain below)
+
+st_autorefresh = st.sidebar.empty()
+st_autorefresh = st.experimental_rerun
+
+# Or the recommended way:
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=refresh_rate * 1000, key="map_refresh")
+
+# ------------------- Main Dashboard -------------------
+lat, lon = fetch_child_location()
 st.subheader("📍 Child Location")
-st.info("Showing latest detected positions of your child on map.")
 
-if not data.empty and "lat" in data.columns and "lon" in data.columns:
-    st.map(data[["lat", "lon"]], zoom=15)
+if lat is not None and lon is not None:
+    if "safe_lat" not in st.session_state:
+        st.session_state.safe_lat, st.session_state.safe_lon = lat, lon
+
+    m = folium.Map(location=[lat, lon], zoom_start=17)
+
+    # Child marker
+    folium.CircleMarker(
+        location=[lat, lon],
+        radius=6,
+        color="red",
+        fill=True,
+        fill_color="red",
+    ).add_to(m)
+
+    # Safe zone
+    folium.Circle(
+        location=[st.session_state.safe_lat, st.session_state.safe_lon],
+        radius=safe_radius,
+        color="blue",
+        fill=True,
+        fill_opacity=0.2
+    ).add_to(m)
+
+    # Update safe zone center on map click
+    map_click = st_folium(m, height=500, width=900)
+    if map_click and map_click["last_clicked"] is not None:
+        st.session_state.safe_lat = map_click["last_clicked"]["lat"]
+        st.session_state.safe_lon = map_click["last_clicked"]["lng"]
+
+    # Show child location
+    st.success(f"Child’s Current Location: 📍 ({lat}, {lon})")
+
+    # Check safe zone
+    distance = haversine(lat, lon, st.session_state.safe_lat, st.session_state.safe_lon)
+    if distance > safe_radius:
+        st.error(f"⚠ ALERT: Child is outside the safe zone! (Distance: {int(distance)}m)")
+    else:
+        st.info(f"✅ Child is inside the safe zone (Distance: {int(distance)}m)")
 else:
     st.warning("No location data available yet.")
-
-# ------------------- Alerts Section -------------------
-st.subheader("🚨 Alerts")
-if not data.empty:
-    latest_events = data.head(5)
-    for _, row in latest_events.iterrows():
-        event = row.get("Event", "Unknown")
-        time = row.get("Time", "Unknown")
-        
-        if "freefall" in event.lower() or "jerk" in event.lower() or "dash" in event.lower():
-            st.markdown(f"<div class='alert-box alert-danger'>⚠️ {event} at {time}</div>", unsafe_allow_html=True)
-        elif "geofence" in event.lower():
-            st.markdown(f"<div class='alert-box alert-warning'>📍 {event} at {time}</div>", unsafe_allow_html=True)
-        elif "sos" in event.lower() or "button" in event.lower():
-            st.markdown(f"<div class='alert-box alert-danger'>🚨 SOS Alert: {event} at {time}</div>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div class='alert-box alert-success'>✅ {event} at {time}</div>", unsafe_allow_html=True)
-else:
-    st.info("No alerts yet. Your child is safe ✅")
