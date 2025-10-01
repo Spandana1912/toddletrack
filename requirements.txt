@@ -3,4 +3,5 @@ pandas
 numpy
 requests
 streamlit-folium
+streamlit-autorefresh
 firebase_admin
