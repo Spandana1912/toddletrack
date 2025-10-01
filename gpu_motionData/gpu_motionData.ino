@@ -11,8 +11,8 @@ TinyGPSPlus gps;
 HardwareSerial gpsSerial(2);
 
 // Wi-Fi credentials
-const char* WIFI_SSID = "Wifi has left the chat";
-const char* WIFI_PASSWORD = "jaguar08";
+const char* WIFI_SSID = "XXX";
+const char* WIFI_PASSWORD = "XXX";
 
 // Firebase Realtime Database URL
 String FIREBASE_URL = "https://toddletrack-fd848-default-rtdb.asia-southeast1.firebasedatabase.app/sensor.json";
