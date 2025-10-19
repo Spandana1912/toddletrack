@@ -1,0 +1,153 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ToddleTrack_inferencing.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+// MPU6050 setup
+Adafruit_MPU6050 mpu;
+
+// Wi-Fi credentials
+const char* WIFI_SSID = "Wifi has left the chat";
+const char* WIFI_PASSWORD = "jaguar08";
+
+// Firebase Realtime Database URL (single node for updates)
+String FIREBASE_URL = "https://toddletrack-fd848-default-rtdb.asia-southeast1.firebasedatabase.app/sensor/current.json";
+
+// Sampling window
+const int WINDOW_SIZE = 100; // match your model
+float ax_window[WINDOW_SIZE];
+float ay_window[WINDOW_SIZE];
+float az_window[WINDOW_SIZE];
+int sample_index = 0;
+
+// Motion detection thresholds
+const float MOTION_THRESHOLD = 1.0; // m/s^2 deviation from gravity
+const float FREEFALL_THRESHOLD = 1.5; // total acceleration near 0
+
+// Timing
+unsigned long last_sent_time = 0;
+unsigned long last_sample_time = 0;
+const int SAMPLING_INTERVAL_MS = 5; // sample every 5ms (~200Hz)
+
+// Function to send data to Firebase
+void sendToFirebase(String jsonPayload) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(FIREBASE_URL);
+    http.addHeader("Content-Type", "application/json");
+    int httpResponseCode = http.PUT(jsonPayload); // overwrite single node
+    Serial.print("Firebase response: ");
+    Serial.println(httpResponseCode);
+    http.end();
+  } else {
+    Serial.println("Wi-Fi not connected");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  // Initialize MPU6050
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip!");
+    while (1) { delay(10); }
+  }
+  Serial.println("MPU6050 connected!");
+
+  // Initialize Wi-Fi
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\nWi-Fi connected!");
+}
+
+void loop() {
+  unsigned long current_time = millis();
+  if (current_time - last_sample_time >= SAMPLING_INTERVAL_MS) {
+    last_sample_time = current_time;
+
+    // Read MPU6050
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+
+    // Fill buffers
+    ax_window[sample_index] = a.acceleration.x;
+    ay_window[sample_index] = a.acceleration.y;
+    az_window[sample_index] = a.acceleration.z;
+    sample_index++;
+
+    if (sample_index >= WINDOW_SIZE) {
+      float ax = a.acceleration.x;
+      float ay = a.acceleration.y;
+      float az = a.acceleration.z;
+
+      // Calculate total acceleration magnitude
+      float magnitude = sqrt(ax*ax + ay*ay + az*az);
+
+      String predictedLabel = "No abnormal motion";
+      float confidence = 0.0;
+
+      // FREEFALL detection
+      if (magnitude < FREEFALL_THRESHOLD) {
+        predictedLabel = "FREEFALL";
+        confidence = 1.0;
+      } 
+      // Detect meaningful motion for Edge Impulse
+      else if (abs(magnitude - 9.81) >= MOTION_THRESHOLD) {
+        float features[WINDOW_SIZE * 3];
+        for (int i = 0; i < WINDOW_SIZE; i++) {
+          features[i*3 + 0] = ax_window[i];
+          features[i*3 + 1] = ay_window[i];
+          features[i*3 + 2] = az_window[i];
+        }
+
+        ei_impulse_result_t result = {0};
+        signal_t signal;
+        signal.total_length = WINDOW_SIZE * 3;
+        signal.get_data = [&](size_t offset, size_t length, float *out_ptr) -> int {
+          for (size_t i = 0; i < length; i++) out_ptr[i] = features[offset + i];
+          return 0;
+        };
+
+        EI_IMPULSE_ERROR res = run_classifier(&signal, &result, false);
+
+        if (res == EI_IMPULSE_OK) {
+          for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+            if (result.classification[ix].value > confidence) {
+              confidence = result.classification[ix].value;
+              predictedLabel = result.classification[ix].label;
+            }
+          }
+        } else {
+          Serial.print("DSP Error: "); Serial.println(res);
+        }
+      }
+
+      // Prepare JSON payload for Firebase
+      String jsonPayload = "{";
+      jsonPayload += "\"prediction\":\"" + predictedLabel + "\",";
+      jsonPayload += "\"confidence\":" + String(confidence, 4) + ",";
+      jsonPayload += "\"ax\":" + String(ax, 4) + ",";
+      jsonPayload += "\"ay\":" + String(ay, 4) + ",";
+      jsonPayload += "\"az\":" + String(az, 4);
+      jsonPayload += "}";
+
+      sendToFirebase(jsonPayload);
+
+      // Serial output
+      Serial.print("Accel X: "); Serial.print(ax);
+      Serial.print(", Y: "); Serial.print(ay);
+      Serial.print(", Z: "); Serial.print(az);
+      Serial.print(" -> Prediction: "); Serial.println(predictedLabel);
+
+      // Reset buffer
+      sample_index = 0;
+    }
+  }
+}
