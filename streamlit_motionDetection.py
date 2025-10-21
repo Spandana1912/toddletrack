@@ -5,7 +5,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # ------------------- Firebase Setup -------------------
 if not firebase_admin._apps:
-    cred = credentials.Certificate(r"C:\Hackathon\AIOT\FIREBASE_GPS\serviceAccountKey.json.json")
+    cred = credentials.Certificate(r"C:\Users\spand\OneDrive\Documents\toddletrack\serviceAccount.json")
     firebase_admin.initialize_app(cred, {
         'databaseURL': 'https://toddletrack-fd848-default-rtdb.asia-southeast1.firebasedatabase.app/'
     })
